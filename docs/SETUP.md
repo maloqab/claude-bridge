@@ -4,22 +4,19 @@ Give this file to your coding agent (Claude Code, Codex, …) together with a co
 the Mac side; you do a few clicks in Grok Bot and Tailscale. Expect about 30 minutes.
 
 **What you get**
-- Your Grok Bots can hand repository work to Claude Code on your Mac: read-only reviews, or edits on a branch
+- Your Grok Bots can hand repository work to Claude Code on your Mac: read-only questions, or edits on a branch
   with a draft PR. They call it as a tool and get the result back.
 - Claude Code can message any of your bots and get answers, from any session on any of your Macs.
-- Optional: automatic Claude reviews on your GitHub PRs (summary, confidence score, inline comments, a status
-  check), with `@claude` follow-ups in PR threads. It can replace a paid review bot.
 
 **How it works.** A small server, `bridge.py`, runs on an always-on Mac and listens only on your Tailscale network.
-Grok Bot reaches it through Grok's Tailscale plugin, as an MCP connector. Claude jobs run headless and locked
-down: no shell, no web, and reads and writes limited to the job's own checkout. When a job finishes, the bridge
-pings one of your bots through a Grok webhook routine. Bots answer Claude with the `message_claude` tool.
+Grok Bot reaches it through Grok's Tailscale plugin, as an MCP connector, and starts Claude Code jobs. When a job
+finishes, the bridge pings one of your bots through a Grok webhook routine. Bots answer Claude with `message_claude`.
 
 ---
 
 ## Before you start (you, the human)
 
-- [ ] **An always-on Mac** (a Mac mini is ideal) with Homebrew Python 3 (`brew install python`), `git`, `gh`
+- [ ] **An always-on Mac** with Homebrew Python 3 (`brew install python`), `git`, `gh`
       logged in (`gh auth login`) and Claude Code (`claude`). Turn off sleep in System Settings → Energy.
 - [ ] **Tailscale** on that Mac, and the **Tailscale plugin connected in Grok Bot** (Grok Bot → Connect apps →
       Tailscale). Grok's sandbox then shows up in your tailnet as a device named like `grokbot-user-<number>`.
@@ -57,11 +54,9 @@ Tell your agent which Mac is the bridge Mac and where you saved the setup token.
    - `claude_token_ref`: where the human saved the setup token, e.g. `op://Private/claude-setup-token/credential`.
    - `allowed_callers`: leave it as the example for now; step 6 fills it in.
    - `repos`: the repositories bots may use. Each needs an `https` `url`, a `branch_prefix` and a
-     `commit_trailer`. `gh` must be able to clone them. `open_pr: true` lets work-mode jobs push a branch and open
-     a draft PR. Leave it `false` until you've read "Security notes": pushed branches run your CI.
+     `commit_trailer`. `git` must be able to clone them. Set `open_pr: true` to push work-mode branches and open a
+     draft PR (needs `gh`).
    - `notify` and `relay_via`: fill these in during Part B.
-   - `pr_review`: keep it only if the human wants automatic reviews. `repos` maps a name from `repos` to
-     `owner/name` on GitHub.
    - `op_cmd`: `op` (or a wrapper that reads with a service account).
 
 4. **Start it:** `launchctl kickstart -k gui/$(id -u)/ai.claude-bridge`, then
@@ -83,10 +78,8 @@ Tell your agent which Mac is the bridge Mac and where you saved the setup token.
    `tailscale whois` if the CLI is installed). Put the device name (`grokbot-user-…`) in `allowed_callers` and
    restart. The bridge checks both the token and this device on every request.
 
-7. **[HUMAN] Required: lock it down in Tailscale.** In the Tailscale admin console → Access controls, add a rule
-   that lets only the Grok device reach the bridge port. For example, in `grants`:
-   `{"src": ["grokbot-user-…"], "dst": ["<bridge-mac>"], "ip": ["tcp:8766"]}`. Make sure no broader rule gives
-   that device access to anything else. Device names can be reused, so the token and this rule work together.
+7. **[HUMAN] Recommended:** in Tailscale → Access controls, let the Grok device reach only the bridge port:
+   `{"src": ["grokbot-user-…"], "dst": ["<bridge-mac>"], "ip": ["tcp:8766"]}`.
 
 ## Part B: the way back (human, with a bot)
 
@@ -124,9 +117,7 @@ Tell your agent which Mac is the bridge Mac and where you saved the setup token.
 12. **Startup check (optional).** Add a SessionStart hook to `~/.claude/settings.json` that runs
     `python3 ~/claude-bridge/deploy/inbox_hook.py`, with matcher `startup|resume|clear|compact` and timeout 10.
     Each session then starts with any bot messages that arrived while no session was open. Merge it into the
-    existing hooks; don't replace them. The hook puts bot-written text into sessions that have a shell, so it
-    marks the text as untrusted data and escapes it. Only enable it if you trust your bots' inputs about as much
-    as you trust them.
+    existing hooks; don't replace them.
 
 ## Check it works
 
@@ -136,7 +127,6 @@ Tell your agent which Mac is the bridge Mac and where you saved the setup token.
 | Ask it: "delegate_to_claude repo=<name> mode=review task='List the top-level folders and what each is for'" | A job ID. `check_job` shows `succeeded` within a few minutes. |
 | `bot <mainbot> "Reply with message_claude: ping test" --wait 600` | `reply from <mainbot>: …` |
 | `bot <otherbot> "Say hi back with message_claude" --wait 1200` | The answer arrives, relayed by your main bot |
-| If reviews are on: open a small PR | A "Claude Review" status, then a review, within about 5-8 minutes |
 
 ## Secret references
 
@@ -144,29 +134,6 @@ Anywhere the config takes a `*_ref`, you can use:
 - `op://vault/item/field`: read with `op_cmd read` (1Password CLI)
 - `env:NAME`: an environment variable of the service (set it in the launchd plist)
 - `file:/path`: a file containing only the secret (use `chmod 600`)
-
-## Security notes
-
-- **Pushing is the riskiest part.** A work-mode job's commits run in CI once pushed, with the repo's secrets. The
-  bridge never pushes changes under `.github/` unless the repo sets `allow_workflow_changes: true`, and Claude
-  can't edit `.github/` or `.git` in work mode. Still: give the bridge Mac's `gh` a **fine-grained token** limited
-  to the configured repos, with **no Workflows permission**, and keep CI secrets in protected environments that
-  need a review before they run.
-- **The Claude Review status is advisory.** A PR's author can try to talk the reviewer into a clean result. Never
-  make it a required check, and never auto-merge on it.
-- **All your bots are one identity to the bridge** (one Grok device). `from_bot` is what the bot says it is.
-
-- The server listens only on the Tailscale IP. Each request needs the bearer token **and** an allowed tailnet
-  device, and the Tailscale ACL (step 7) limits that device to the bridge port.
-- Jobs run `claude -p` with `--tools` (Read, Grep, Glob, plus Edit and Write in work mode), `dontAsk`, no user or
-  project settings, hooks or MCP, and writes limited to the job's worktree. The bridge does the git work itself.
-  PR reviews also remove the PR's `CLAUDE.md`, `AGENTS.md`, `.claude/` and `.mcp.json` before Claude reads it.
-- Jobs get a minimal environment (no bridge secrets), and PR checkouts have no symlinks and no Git LFS downloads.
-  State is private to the bridge user (`umask 077`).
-- Limits: one job at a time, caps per hour (jobs, reviews and `@claude` answers), and a hop cap against
-  bot-and-Claude loops. Webhooks carry pointers, not results.
-- Anyone with your webhook key can message your main bot, and with the standing instruction, direct it.
-  Keep the key in your secret store; regenerate it in the routine panel if it leaks.
 
 ## Troubleshooting
 
@@ -178,4 +145,3 @@ Anywhere the config takes a `*_ref`, you can use:
 | A routine edit doesn't happen | Approve it in the bot's chat; a routine can't edit itself. |
 | Service won't start; log shows a 1Password error | Check the field name. Password items call their main field `password`, whatever you labelled it. |
 | Jobs fail with "Claude returned no JSON result" | The setup token is wrong or expired. Run `claude setup-token` again and update the secret. |
-| Reviews post under your own GitHub name | They post as the bridge Mac's `gh` login. Use a separate GitHub account or app if you want a bot name. |

@@ -25,14 +25,6 @@
     }
   },
   "relay_via": "mainbot",
-  "pr_review": {
-    "repos": {
-      "my-repo": "my-org/my-repo"
-    },
-    "interval_s": 180,
-    "settle_s": 120,
-    "max_per_pr_per_day": 4
-  },
   "max_turns": 40,
   "job_timeout_s": 1800,
   "max_jobs_per_hour": 6,
