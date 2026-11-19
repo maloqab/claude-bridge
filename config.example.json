@@ -1,0 +1,40 @@
+{
+  "owner": "Alex",
+  "host": "100.x.y.z",
+  "port": 8766,
+  "state_dir": "~/.claude-bridge",
+  "claude_bin": "~/.local/bin/claude",
+  "op_cmd": "op",
+  "token_ref": "op://Private/claude-bridge/password",
+  "claude_token_ref": "op://Private/claude-setup-token/credential",
+  "allowed_callers": [
+    "grokbot-user-123456789"
+  ],
+  "repos": {
+    "my-repo": {
+      "url": "https://github.com/my-org/my-repo.git",
+      "branch_prefix": "claude-bridge/",
+      "commit_trailer": "Agent: claude-code@my-mac",
+      "open_pr": false
+    }
+  },
+  "notify": {
+    "mainbot": {
+      "url_ref": "op://Private/grok-mainbot-webhook/url",
+      "key_ref": "op://Private/grok-mainbot-webhook/key"
+    }
+  },
+  "relay_via": "mainbot",
+  "pr_review": {
+    "repos": {
+      "my-repo": "my-org/my-repo"
+    },
+    "interval_s": 180,
+    "settle_s": 120,
+    "max_per_pr_per_day": 4
+  },
+  "max_turns": 40,
+  "job_timeout_s": 1800,
+  "max_jobs_per_hour": 6,
+  "max_hops": 3
+}

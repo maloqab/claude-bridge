@@ -1,0 +1,16 @@
+#!/bin/sh
+# Message any Grok bot from any Mac, and optionally wait for the answer.
+#   bot <name> "<message>" [--wait SECONDS]
+# Bots with their own webhook get it directly; the rest are relayed by the config's relay_via bot.
+# Bots answer with claude-bridge message_claude; with --wait the answer is printed here.
+# On the bridge Mac it runs locally. Elsewhere it uses ssh to the host named in
+# $CLAUDE_BRIDGE_SSH or ~/.config/claude-bridge/ssh-host (an ssh alias or user@host).
+PYPATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+if [ -f "$HOME/.config/claude-bridge/config.json" ]; then
+  cd "$HOME/claude-bridge" && PATH="$PYPATH" exec python3 bridge.py send "$@"
+fi
+host="${CLAUDE_BRIDGE_SSH:-$(cat "$HOME/.config/claude-bridge/ssh-host" 2>/dev/null)}"
+[ -n "$host" ] || { echo "Set the bridge host: echo <ssh-alias> > ~/.config/claude-bridge/ssh-host" >&2; exit 1; }
+args=$(/usr/bin/python3 -c 'import shlex, sys; print(" ".join(shlex.quote(a) for a in sys.argv[1:]))' "$@")
+exec ssh -o ConnectTimeout=5 -o ServerAliveInterval=30 "$host" \
+  "cd ~/claude-bridge && PATH=/opt/homebrew/bin:/usr/local/bin:\$PATH python3 bridge.py send $args"
