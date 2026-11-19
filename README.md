@@ -15,7 +15,7 @@ Grok Bot  ──  delegate_to_claude  ──▶  claude-bridge  ──▶  Claud
 
 - **Grok → Claude.** A bot calls `delegate_to_claude` to start a Claude Code job in one of your repos, either
   read-only or with edits on a fresh branch, then reads the result with `check_job`.
-- **Claude → Grok.** From any Claude Code session, `bot elon "…"` wakes a bot, and the bot answers with
+- **Claude → Grok.** From any Claude Code session, `bot assistant "…"` wakes a bot, and the bot answers with
   `message_claude`. Bots without their own webhook are reached through your main bot.
 - **Conversations.** `resume_claude` continues a finished job with a follow-up, in the same session and branch.
 - **Private by default.** It runs on your Mac and is reachable only on your tailnet. Nothing is exposed to the internet.
@@ -56,8 +56,8 @@ claude setup-token                                # a token for Claude Code to r
 **From Claude Code** (or any terminal on your Macs):
 
 ```bash
-bot elon "The deploy finished. Can you post the release notes?"
-bot jaber "What's the status of the data import?" --wait 600   # waits for the reply
+bot assistant "The deploy finished. Can you post the release notes?"
+bot researcher "What's the status of the data import?" --wait 600   # waits for the reply
 ```
 
 ## Tools
