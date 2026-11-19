@@ -1,5 +1,5 @@
 #!/bin/sh
-# Install or update claude-bridge as a launchd agent on the Mac mini. Idempotent.
+# Install or update claude-bridge as a launchd agent on the bridge Mac. Idempotent.
 # Run from the repo checkout:  sh deploy/install.sh
 set -eu
 REPO="$(cd "$(dirname "$0")/.." && pwd)"

@@ -5,7 +5,7 @@ Lets your Grok Bots hand repository work to Claude Code on an always-on Mac, pri
 > Community project, not affiliated with or endorsed by Anthropic or xAI. Claude and Claude Code are Anthropic's; Grok Bot is xAI's. Provided as is under the [MIT license](LICENSE) and maintained on a best-effort basis. Report security issues privately: see [SECURITY.md](SECURITY.md).
 
 ```
-Grok Bot ──MCP over tailnet──▶ claude-bridge (Mac mini) ──▶ claude -p in a locked-down worktree
+Grok Bot ──MCP over tailnet──▶ claude-bridge (bridge Mac) ──▶ claude -p in a locked-down worktree
    ▲                                   │
    └──── Grok webhook routine ◀────────┘  (pointer only: job id + status)
 ```

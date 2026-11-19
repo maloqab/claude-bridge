@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Claude Code SessionStart hook: show claude-bridge messages that arrived since the last session.
 
-Grok bots write to ~/.claude-bridge/inbox/claude-code.jsonl on the Mac mini (message_claude tool).
+Grok bots write to ~/.claude-bridge/inbox/claude-code.jsonl on the bridge Mac (message_claude tool).
 On the bridge Mac this reads the file directly; on other Macs it reads it over ssh, using the host in
 $CLAUDE_BRIDGE_SSH or ~/.config/claude-bridge/ssh-host.
 Each Mac keeps its own "seen up to" marker, so a message shows once per machine.

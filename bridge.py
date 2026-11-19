@@ -189,7 +189,7 @@ class JobStore:
 
 TOOLS = [
     {'name': 'delegate_to_claude',
-     'description': ('Start a Claude Code job on the Mac mini in an allowlisted repository. Returns a job_id at once; '
+     'description': ('Start a Claude Code job on the owner's bridge Mac in an allowlisted repository. Returns a job_id at once; '
                      'the job runs in the background (usually 1-15 minutes). mode "review" can only read the repo. '
                      'mode "work" can edit files in its own branch; the bridge commits the changes. Claude has no shell '
                      'or web access. Pass notify (a configured bot name) to have the bridge wake that bot when the job ends, then '
