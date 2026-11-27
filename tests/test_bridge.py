@@ -415,5 +415,168 @@ class BridgeTests(unittest.TestCase):
         self.assertEqual(post({'jsonrpc': '2.0', 'id': 2, 'method': 'tools/list'}, token='bad')[0], 401)
 
 
+FAKE_REX = r'''#!/usr/bin/env python3
+import json, os, sys
+from pathlib import Path
+
+state_file = Path(os.environ["FAKE_REX_STATE"])
+if state_file.exists():
+    st = json.loads(state_file.read_text())
+else:
+    st = {"sessions": [{"session_id": "session:human-1", "label": "Izdihar", "output": "human output\n"}], "calls": []}
+
+args = sys.argv[1:]
+st["calls"].append(args)
+cmd = args[0]
+
+if cmd == "ls":
+    print(json.dumps({"sessions": [{"session_id": s["session_id"], "label": s["label"]} for s in st["sessions"]]}))
+elif cmd == "new":
+    label = args[1]
+    sid = f"session:bot-{len(st['sessions']) + 1}"
+    sep = args.index("--")
+    launched = args[sep + 1:]
+    st["sessions"].append({"session_id": sid, "label": label, "cmd": launched, "output": f"started {label}: {' '.join(launched)}\n"})
+    state_file.write_text(json.dumps(st))
+    print(json.dumps({"session_id": sid, "label": label}))
+elif cmd == "capture":
+    sid = args[args.index("-s") + 1]
+    for s in st["sessions"]:
+        if s["session_id"] == sid or s["label"] == sid:
+            print(s["output"], end="")
+            break
+elif cmd == "send":
+    sid = args[args.index("-s") + 1]
+    text = args[-1]
+    for s in st["sessions"]:
+        if s["session_id"] == sid or s["label"] == sid:
+            s["output"] += f"> {text}\n"
+            break
+    state_file.write_text(json.dumps(st))
+elif cmd == "send-key":
+    sid = args[args.index("-s") + 1]
+    key = args[-1]
+    for s in st["sessions"]:
+        if s["session_id"] == sid or s["label"] == sid:
+            s["output"] += f"[key:{key}]\n"
+            break
+    state_file.write_text(json.dumps(st))
+elif cmd == "kill":
+    sid = args[1]
+    st["sessions"] = [s for s in st["sessions"] if s["session_id"] != sid and s["label"] != sid]
+    state_file.write_text(json.dumps(st))
+else:
+    sys.exit(1)
+if cmd in ("ls", "capture"):
+    state_file.write_text(json.dumps(st))
+'''
+
+
+class RexToolsTests(unittest.TestCase):
+    def setUp(self):
+        t = tempfile.TemporaryDirectory()
+        self.addCleanup(t.cleanup)
+        self.root = Path(t.name)
+        self.allowed = self.root / 'allowed'
+        self.allowed.mkdir()
+        self.denied = self.allowed / 'Onyx' / 'Fleet'
+        self.denied.mkdir(parents=True)
+        self.outside = self.root / 'outside'
+        self.outside.mkdir()
+        fake_rex = self.root / 'rex'
+        fake_rex.write_text(FAKE_REX)
+        fake_rex.chmod(0o755)
+        self.rex_state = self.root / 'rex_state.json'
+        os.environ['FAKE_REX_STATE'] = str(self.rex_state)
+        self.throttle = self.root / 'cron-state.json'
+        self.cfg = bridge.normalize({
+            'host': '127.0.0.1', 'port': 0,
+            'state_dir': str(self.root / 'state'),
+            'token_ref': 'env:CB_T', 'claude_token_ref': 'env:CB_C',
+            'allowed_callers': ['grokbot-user-1'],
+            'rex': {
+                'enabled': True,
+                'rex_bin': str(fake_rex),
+                'agi_bin': '/opt/homebrew/bin/agy',
+                'claude_bin': '/Users/jarvisz/.local/bin/claude',
+                'allowed_roots': [str(self.allowed)],
+                'denied_paths': [str(self.denied)],
+                'default_cwd': str(self.allowed),
+                'max_sessions_per_hour': 3,
+                'throttle_cache_path': str(self.throttle),
+            },
+        })
+        self.b = bridge.Bridge(self.cfg, read_secret=lambda r: 'T0KEN', whois=lambda ip: 'grokbot-user-1')
+
+    def call(self, _tool, **args):
+        r = self.b.rpc({'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
+                        'params': {'name': _tool, 'arguments': args}}, 'grokbot-user-1')['result']
+        return r.get('isError', False), json.loads(r['content'][0]['text'])
+
+    def test_rex_tools_hidden_when_disabled(self):
+        cfg = bridge.normalize({'state_dir': str(self.root / 's2'), 'token_ref': 'env:CB_T'})
+        b = bridge.Bridge(cfg, read_secret=lambda r: 'T', whois=lambda ip: 'x')
+        names = [t['name'] for t in b.tools()]
+        self.assertNotIn('start_rex_session', names)
+
+    def test_start_read_send_kill_agi_and_cc(self):
+        names = [t['name'] for t in self.b.tools()]
+        self.assertIn('start_rex_session', names)
+
+        err, s1 = self.call('start_rex_session', agent='agi', name='research', prompt='hello agi')
+        self.assertFalse(err, s1)
+        self.assertEqual(s1['label'], 'bot-research')
+        self.assertEqual(s1['agent'], 'agi')
+
+        err, s2 = self.call('start_rex_session', agent='cc', name='bot-fix', prompt='hello cc')
+        self.assertFalse(err, s2)
+        self.assertEqual(s2['label'], 'bot-fix')
+
+        err, listing = self.call('list_rex_sessions')
+        self.assertFalse(err)
+        by_label = {s['label']: s for s in listing['sessions']}
+        self.assertFalse(by_label['Izdihar']['owned_by_bridge'])
+        self.assertTrue(by_label['bot-research']['owned_by_bridge'])
+
+        err, cap = self.call('read_rex_session', session='bot-research')
+        self.assertFalse(err)
+        self.assertIn('--dangerously-skip-permissions --prompt-interactive hello agi', cap['output'])
+
+        err, cap2 = self.call('read_rex_session', session='bot-fix')
+        self.assertFalse(err)
+        self.assertIn('--dangerously-skip-permissions hello cc', cap2['output'])
+
+        err, sent = self.call('send_to_rex_session', session='bot-research', text='status?', submit=True)
+        self.assertFalse(err, sent)
+        err, cap_after = self.call('read_rex_session', session='bot-research')
+        self.assertIn('> status?', cap_after['output'])
+        self.assertIn('[key:enter]', cap_after['output'])
+
+        # Refuses to send to or kill human-owned session
+        self.assertTrue(self.call('send_to_rex_session', session='Izdihar', text='hi')[0])
+        self.assertTrue(self.call('kill_rex_session', session='Izdihar')[0])
+
+        # Can kill bridge-owned session
+        err, killed = self.call('kill_rex_session', session='bot-research')
+        self.assertFalse(err, killed)
+        self.assertTrue(killed['killed'])
+
+    def test_cwd_allowlist_and_denied_paths(self):
+        self.assertTrue(self.call('start_rex_session', agent='agi', name='bad1', cwd=str(self.outside))[0])
+        self.assertTrue(self.call('start_rex_session', agent='agi', name='bad2', cwd=str(self.denied))[0])
+
+    def test_fleet_throttle_blocks_start_and_send(self):
+        err, s = self.call('start_rex_session', agent='cc', name='t1')
+        self.assertFalse(err)
+        self.throttle.write_text(json.dumps({'fleet_throttle': 'Freeze'}))
+        self.assertTrue(self.call('start_rex_session', agent='cc', name='t2')[0])
+        self.assertTrue(self.call('send_to_rex_session', session=s['label'], text='go')[0])
+
+    def test_rate_limit(self):
+        for i in range(3):
+            self.assertFalse(self.call('start_rex_session', agent='agi', name=f'r{i}')[0])
+        self.assertTrue(self.call('start_rex_session', agent='agi', name='r3')[0])
+
+
 if __name__ == '__main__':
     unittest.main()

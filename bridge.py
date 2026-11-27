@@ -83,6 +83,25 @@ def normalize(cfg):
     cfg.setdefault('max_messages_per_hour', 30)
     for k in ('state_dir', 'claude_bin', 'op_cmd'):
         cfg[k] = str(Path(cfg[k]).expanduser())
+    rex = dict(cfg.get('rex') or {})
+    rex.setdefault('enabled', False)
+    rex.setdefault('rex_bin', '~/.local/bin/rex')
+    rex.setdefault('agi_bin', '/opt/homebrew/bin/agy')
+    rex.setdefault('claude_bin', cfg['claude_bin'])
+    rex.setdefault('shell', '/bin/zsh')
+    rex.setdefault('allowed_roots', [])
+    rex.setdefault('denied_paths', ['~/Onyx/Fleet'])
+    rex.setdefault('default_cwd', '~')
+    rex.setdefault('max_sessions_per_hour', 12)
+    rex.setdefault('max_capture_chars', 16000)
+    rex.setdefault('session_prefix', 'bot-')
+    rex.setdefault('allow_control_unowned', False)
+    rex.setdefault('throttle_cache_path', '~/.config/notion/cron-state.json')
+    for k in ('rex_bin', 'agi_bin', 'claude_bin', 'default_cwd', 'throttle_cache_path'):
+        rex[k] = str(Path(rex[k]).expanduser())
+    rex['allowed_roots'] = [str(Path(p).expanduser()) for p in rex['allowed_roots']]
+    rex['denied_paths'] = [str(Path(p).expanduser()) for p in rex['denied_paths']]
+    cfg['rex'] = rex
     return cfg
 
 
@@ -155,6 +174,8 @@ def wt_git(job, *args, check=True):
 
 JOB_ENV_KEYS = ('HOME', 'USER', 'LOGNAME', 'LANG', 'LC_ALL', 'LC_CTYPE', 'TMPDIR', 'SHELL', 'TERM')
 REPLY_TO_RE = re.compile(r'[A-Za-z0-9_-]{1,64}')
+REX_NAME_RE = re.compile(r'[A-Za-z0-9][A-Za-z0-9._-]{0,47}')
+REX_KEY_RE = re.compile(r'[A-Za-z0-9_+[\]-]{1,32}')
 
 
 class JobStore:
@@ -221,6 +242,40 @@ TOOLS = [
          'from_bot': {'type': 'string', 'description': 'Your bot name (e.g. "helper"), so Claude knows who wrote'}}}},
 ]
 
+REX_TOOLS = [
+    {'name': 'start_rex_session',
+     'description': ('Start a live, visible interactive Rex terminal session on the Mac mini running either '
+                     '"agi" (Antigravity CLI: agy --dangerously-skip-permissions) or "cc" (Claude Code: '
+                     'claude --dangerously-skip-permissions). Returns session_id and label so both you and '
+                     'the owner can watch or interact with it live in Rex.'),
+     'inputSchema': {'type': 'object', 'required': ['agent', 'name'], 'properties': {
+         'agent': {'type': 'string', 'enum': ['agi', 'cc'],
+                   'description': '"agi" for Antigravity (agy) or "cc" for Claude Code (claude)'},
+         'name': {'type': 'string', 'description': 'Short session label (letters, digits, ., _, -; auto-prefixed with bot-)'},
+         'cwd': {'type': 'string', 'description': 'Optional working directory inside allowlisted paths (defaults to home)'},
+         'prompt': {'type': 'string', 'description': 'Optional initial interactive prompt to start the agent with'}}}},
+    {'name': 'list_rex_sessions',
+     'description': 'List live Rex sessions on the Mac mini, including which ones were created by the bridge.',
+     'inputSchema': {'type': 'object', 'properties': {}}},
+    {'name': 'read_rex_session',
+     'description': 'Capture the recent terminal output of a live Rex session on the Mac mini.',
+     'inputSchema': {'type': 'object', 'required': ['session'], 'properties': {
+         'session': {'type': 'string', 'description': 'Session label or session_id from list_rex_sessions'},
+         'max_chars': {'type': 'integer', 'minimum': 200, 'maximum': 20000, 'default': 8000}}}},
+    {'name': 'send_to_rex_session',
+     'description': ('Send follow-up text and/or a key press (e.g. "enter", "ctrl+c", "escape") to a '
+                     'bridge-owned Rex session on the Mac mini.'),
+     'inputSchema': {'type': 'object', 'required': ['session'], 'properties': {
+         'session': {'type': 'string', 'description': 'Session label or session_id'},
+         'text': {'type': 'string', 'description': 'Text to type into the terminal'},
+         'submit': {'type': 'boolean', 'default': True, 'description': 'Press Enter after sending text'},
+         'key': {'type': 'string', 'description': 'Optional Rex key name (e.g. ctrl+c, escape, enter)'}}}},
+    {'name': 'kill_rex_session',
+     'description': 'Terminate a Rex session that was started by the bridge (refuses to kill human-owned sessions).',
+     'inputSchema': {'type': 'object', 'required': ['session'], 'properties': {
+         'session': {'type': 'string', 'description': 'Session label or session_id'}}}},
+]
+
 
 class ToolError(Exception):
     pass
@@ -236,6 +291,7 @@ class Bridge:
         self.token = self.read_secret(cfg['token_ref'])
         self.busy = threading.Lock()
         self.inbox_lock = threading.Lock()
+        self.rex_lock = threading.Lock()
         self.proc = None
         for job in self.store.all():
             if job['status'] in ('queued', 'running'):
@@ -259,10 +315,15 @@ class Bridge:
             return None
         if method == 'initialize':
             ver = (msg.get('params') or {}).get('protocolVersion', '2025-06-18')
+            instr = ('Hand repository work to Claude Code on the owner\'s Mac with delegate_to_claude, then check_job. '
+                     'To reply to or message Claude Code directly, use message_claude.')
+            if self.cfg['rex']['enabled']:
+                instr += (' To launch or steer live interactive Rex sessions running agi (Antigravity) or cc '
+                          '(Claude Code) on the Mac mini, use start_rex_session, list_rex_sessions, read_rex_session, '
+                          'send_to_rex_session, and kill_rex_session.')
             result = {'protocolVersion': ver, 'capabilities': {'tools': {}},
                       'serverInfo': {'name': 'claude-bridge', 'version': VERSION},
-                      'instructions': ('Hand repository work to Claude Code on the owner\'s Mac with delegate_to_claude, then check_job. '
-                                       'To reply to or message Claude Code directly, use message_claude.')}
+                      'instructions': instr}
         elif method == 'ping':
             result = {}
         elif method == 'tools/list':
@@ -279,7 +340,7 @@ class Bridge:
         return {'jsonrpc': '2.0', 'id': mid, 'result': result}
 
     def tools(self):
-        return TOOLS
+        return (TOOLS + REX_TOOLS) if self.cfg['rex']['enabled'] else TOOLS
 
     def extra_prompt(self, job):
         """Extra text appended to a job's prompt. Extensions override this."""
@@ -302,7 +363,246 @@ class Bridge:
                              for j in self.store.all()[:limit]]}
         if name == 'message_claude':
             return self.message(caller, args.get('message'), args.get('reply_to'), args.get('from_bot'))
+        if self.cfg['rex']['enabled']:
+            if name == 'start_rex_session':
+                return self.start_rex_session(caller, args.get('agent'), args.get('name'),
+                                              args.get('cwd'), args.get('prompt'))
+            if name == 'list_rex_sessions':
+                return self.list_rex_sessions()
+            if name == 'read_rex_session':
+                return self.read_rex_session(args.get('session'), args.get('max_chars') or 8000)
+            if name == 'send_to_rex_session':
+                return self.send_to_rex_session(caller, args.get('session'), args.get('text'),
+                                                True if args.get('submit') is None else bool(args.get('submit')),
+                                                args.get('key'))
+            if name == 'kill_rex_session':
+                return self.kill_rex_session(caller, args.get('session'))
         raise ToolError(f'unknown tool {name}')
+
+    # ---------- live interactive Rex sessions (agi / cc)
+    def _rex_env(self):
+        env = dict(os.environ)
+        extra = ['/opt/homebrew/bin', '/usr/local/bin', str(Path.home() / '.local/bin')]
+        parts = [p for p in env.get('PATH', '').split(':') if p]
+        for p in reversed(extra):
+            if p not in parts:
+                parts.insert(0, p)
+        env['PATH'] = ':'.join(parts)
+        return env
+
+    def _rex_run(self, *args, timeout=15):
+        rex_bin = self.cfg['rex']['rex_bin']
+        try:
+            r = subprocess.run([rex_bin, *args], capture_output=True, text=True, timeout=timeout, env=self._rex_env())
+        except FileNotFoundError as e:
+            raise ToolError(f'rex binary not found at {rex_bin}') from e
+        except subprocess.TimeoutExpired as e:
+            raise ToolError(f'rex command timed out after {timeout}s') from e
+        if r.returncode != 0:
+            raise ToolError(redact(f'rex {" ".join(args[:2])} failed: {(r.stderr or r.stdout).strip()[:300]}'))
+        return r.stdout
+
+    def _rex_registry_path(self):
+        return self.state / 'rex_sessions.json'
+
+    def _load_rex_registry(self):
+        p = self._rex_registry_path()
+        if not p.is_file():
+            return {'sessions': {}, 'history': []}
+        try:
+            data = json.loads(p.read_text())
+            data.setdefault('sessions', {})
+            data.setdefault('history', [])
+            return data
+        except ValueError:
+            return {'sessions': {}, 'history': []}
+
+    def _save_rex_registry(self, data):
+        p = self._rex_registry_path()
+        p.parent.mkdir(parents=True, exist_ok=True)
+        tmp = p.with_suffix('.json.tmp')
+        tmp.write_text(json.dumps(data, indent=2))
+        tmp.replace(p)
+
+    def _check_rex_throttle(self):
+        p = Path(self.cfg['rex']['throttle_cache_path'])
+        if not p.is_file():
+            return
+        try:
+            data = json.loads(p.read_text())
+        except ValueError:
+            return
+        mode = data.get('fleet_throttle') or data.get('mode') or 'Normal'
+        if mode in ('Freeze', 'Read-Only'):
+            raise ToolError(f'Fleet Throttle is {mode}; Rex session writes/launches are paused')
+
+    def _resolve_rex_cwd(self, cwd):
+        rex_cfg = self.cfg['rex']
+        raw = cwd or rex_cfg['default_cwd']
+        if not isinstance(raw, str) or not raw.strip():
+            raise ToolError('cwd must be a non-empty path string')
+        target = Path(raw).expanduser().resolve()
+        if not target.is_dir():
+            raise ToolError(f'cwd does not exist or is not a directory: {raw}')
+        for denied in rex_cfg['denied_paths']:
+            dp = Path(denied).resolve()
+            if target == dp or dp in target.parents:
+                raise ToolError(f'cwd is inside denied path: {denied}')
+        roots = [Path(r).resolve() for r in rex_cfg['allowed_roots']]
+        if roots and not any(target == r or r in target.parents for r in roots):
+            raise ToolError(f'cwd is outside allowlisted roots: {raw}')
+        return str(target)
+
+    def _rex_live_sessions(self):
+        out = self._rex_run('ls', '--json')
+        try:
+            data = json.loads(out)
+        except ValueError as e:
+            raise ToolError(f'unexpected rex ls output: {out[:200]}') from e
+        return data.get('sessions') or []
+
+    def _resolve_rex_session(self, session_ref, require_owned=False):
+        if not session_ref or not isinstance(session_ref, str):
+            raise ToolError('session must be a non-empty label or session_id')
+        live = self._rex_live_sessions()
+        match = None
+        for s in live:
+            if s.get('session_id') == session_ref or s.get('label') == session_ref:
+                match = s
+                break
+        if not match:
+            raise ToolError(f'unknown or closed Rex session: {session_ref!r}')
+        with self.rex_lock:
+            reg = self._load_rex_registry()
+        sid = match['session_id']
+        label = match.get('label') or ''
+        prefix = self.cfg['rex']['session_prefix']
+        owned = (sid in reg['sessions']) or (bool(prefix) and label.startswith(prefix))
+        if require_owned and not owned and not self.cfg['rex']['allow_control_unowned']:
+            raise ToolError(f'refusing to modify human-owned Rex session {label or sid!r}')
+        return match, owned, reg['sessions'].get(sid)
+
+    def start_rex_session(self, caller, agent, name, cwd=None, prompt=None):
+        if agent not in ('agi', 'cc'):
+            raise ToolError('agent must be "agi" or "cc"')
+        if not name or not isinstance(name, str) or not REX_NAME_RE.fullmatch(name):
+            raise ToolError('name must be 1-48 chars matching [A-Za-z0-9._-]')
+        if prompt is not None and (not isinstance(prompt, str) or len(prompt) > MAX_TASK_CHARS):
+            raise ToolError(f'prompt must be a string up to {MAX_TASK_CHARS} characters')
+        self._check_rex_throttle()
+        resolved_cwd = self._resolve_rex_cwd(cwd)
+
+        rex_cfg = self.cfg['rex']
+        prefix = rex_cfg['session_prefix']
+        label = name if (not prefix or name.startswith(prefix)) else f'{prefix}{name}'
+
+        with self.rex_lock:
+            reg = self._load_rex_registry()
+            cutoff = time.time() - 3600
+            recent = [h for h in reg['history'] if h.get('caller') == caller and h.get('ts', 0) > cutoff]
+            if len(recent) >= rex_cfg['max_sessions_per_hour']:
+                raise ToolError(f'rate limit: {len(recent)} Rex sessions started in the last hour (max {rex_cfg["max_sessions_per_hour"]})')
+
+        if agent == 'agi':
+            cmd = [rex_cfg['agi_bin'], '--dangerously-skip-permissions']
+            if prompt:
+                cmd += ['--prompt-interactive', prompt]
+        else:
+            cmd = [rex_cfg['claude_bin'], '--dangerously-skip-permissions']
+            if prompt:
+                cmd.append(prompt)
+
+        rex_args = ['new', label, '--cwd', resolved_cwd, '--keep-open', '--json']
+        if rex_cfg.get('shell'):
+            rex_args += ['--shell', rex_cfg['shell']]
+        rex_args += ['--', *cmd]
+
+        out = self._rex_run(*rex_args, timeout=20)
+        try:
+            created = json.loads(out)
+        except ValueError as e:
+            raise ToolError(f'unexpected rex new output: {out[:200]}') from e
+        sid = created.get('session_id') or (created.get('session') or {}).get('session_id') or label
+        final_label = created.get('label') or (created.get('session') or {}).get('label') or label
+        meta = {
+            'session_id': sid,
+            'label': final_label,
+            'agent': agent,
+            'cwd': resolved_cwd,
+            'caller': caller,
+            'started': now(),
+            'ts': time.time(),
+            'prompt_preview': (prompt or '')[:120],
+        }
+        with self.rex_lock:
+            reg = self._load_rex_registry()
+            reg['sessions'][sid] = meta
+            reg['history'] = [h for h in reg['history'] if h.get('ts', 0) > time.time() - 86400]
+            reg['history'].append({'caller': caller, 'session_id': sid, 'ts': meta['ts']})
+            self._save_rex_registry(reg)
+        return {k: v for k, v in meta.items() if k != 'ts'}
+
+    def list_rex_sessions(self):
+        live = self._rex_live_sessions()
+        with self.rex_lock:
+            reg = self._load_rex_registry()
+        prefix = self.cfg['rex']['session_prefix']
+        out = []
+        for s in live:
+            sid = s.get('session_id')
+            label = s.get('label') or ''
+            meta = reg['sessions'].get(sid) or {}
+            owned = (sid in reg['sessions']) or (bool(prefix) and label.startswith(prefix))
+            item = {'session_id': sid, 'label': label, 'owned_by_bridge': owned}
+            for k in ('agent', 'cwd', 'caller', 'started', 'prompt_preview'):
+                if k in meta:
+                    item[k] = meta[k]
+            out.append(item)
+        return {'sessions': out}
+
+    def read_rex_session(self, session_ref, max_chars=8000):
+        match, owned, meta = self._resolve_rex_session(session_ref, require_owned=False)
+        cap_max = min(max(200, int(max_chars or 8000)), self.cfg['rex']['max_capture_chars'])
+        text = self._rex_run('capture', '-s', match['session_id'], '--trim', timeout=15)
+        truncated = len(text) > cap_max
+        if truncated:
+            text = text[-cap_max:]
+        return {
+            'session_id': match['session_id'],
+            'label': match.get('label') or '',
+            'owned_by_bridge': owned,
+            'agent': (meta or {}).get('agent'),
+            'truncated': truncated,
+            'output': text,
+        }
+
+    def send_to_rex_session(self, caller, session_ref, text=None, submit=True, key=None):
+        self._check_rex_throttle()
+        match, _, _ = self._resolve_rex_session(session_ref, require_owned=True)
+        if text is None and key is None:
+            raise ToolError('provide text and/or key')
+        if text is not None and (not isinstance(text, str) or len(text) > MAX_MESSAGE_CHARS):
+            raise ToolError(f'text must be a string up to {MAX_MESSAGE_CHARS} characters')
+        if key is not None and (not isinstance(key, str) or not REX_KEY_RE.fullmatch(key)):
+            raise ToolError('key must match [A-Za-z0-9_+[]-]{1,32}')
+        sid = match['session_id']
+        if text:
+            self._rex_run('send', '-s', sid, text, timeout=15)
+            if submit:
+                self._rex_run('send-key', '-s', sid, 'enter', timeout=15)
+        if key:
+            self._rex_run('send-key', '-s', sid, key, timeout=15)
+        return {'session_id': sid, 'label': match.get('label') or '', 'sent': True}
+
+    def kill_rex_session(self, caller, session_ref):
+        match, _, _ = self._resolve_rex_session(session_ref, require_owned=True)
+        sid = match['session_id']
+        self._rex_run('kill', sid, timeout=15)
+        with self.rex_lock:
+            reg = self._load_rex_registry()
+            reg['sessions'].pop(sid, None)
+            self._save_rex_registry(reg)
+        return {'session_id': sid, 'label': match.get('label') or '', 'killed': True}
 
     @staticmethod
     def public(job):
