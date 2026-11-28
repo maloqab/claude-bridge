@@ -1,74 +1,69 @@
-# claude-bridge
+# tether
 
-**Connect your Grok Bots to Claude Code, both ways.**
+**Tether cloud bots to local coding agents on your Mac, both ways.**
 
-claude-bridge is a small MCP server that runs on your own Mac. Your Grok Bots connect to it over Tailscale and
-can give Claude Code work in your repositories. Claude Code can message any of your bots and get answers back.
+Tether *(formerly `claude-bridge`)* is a single-file, dependency-free MCP server that runs on an always-on Mac over [Tailscale](https://tailscale.com). Cloud bots (such as Grok Bots) connect to it privately on your tailnet to delegate work in your repositories, and any local coding agent or terminal session on your Macs (Claude Code, Codex, Antigravity, OpenCode, or plain shell) can message your bots and get answers back.
 
 ```
-Grok Bot  ──  delegate_to_claude  ──▶  claude-bridge  ──▶  Claude Code
-   ▲                                       │
-   └──── webhook (job done, or a message from Claude) ◀────┘
+Cloud Bot (Grok) ── MCP over Tailscale ──▶ tether ──▶ Local Coding Agents
+       ▲                                     │        (Claude Code, terminal CLI, …)
+       └──── webhook (job done / `bot` msg) ─┘
 ```
 
-## Features
+## What it does
 
-- **Grok → Claude.** A bot calls `delegate_to_claude` to start a Claude Code job in one of your repos, either
-  read-only or with edits on a fresh branch, then reads the result with `check_job`.
-- **Claude → Grok.** From any Claude Code session, `bot assistant "…"` wakes a bot, and the bot answers with
-  `message_claude`. Bots without their own webhook are reached through your main bot.
-- **Conversations.** `resume_claude` continues a finished job with a follow-up, in the same session and branch.
-- **Private by default.** It runs on your Mac and is reachable only on your tailnet. Nothing is exposed to the internet.
-- **Small.** It's one Python file with no dependencies.
+- **Bot → Local Agent.** A cloud bot calls `delegate_to_claude` to run a headless coding job in an allowlisted repo — either `review` (read-only) or `work` (edits on a fresh branch with optional draft PR) — and inspects results with `check_job`.
+- **Any Local Agent → Bot.** From any terminal or coding-agent session on any of your Macs, `bot assistant "…"` wakes a cloud bot and optionally waits for its reply via `message_claude`. Bots without their own webhook are relayed through your main bot.
+- **Multi-turn conversations.** `resume_claude` continues a finished job with a follow-up in the same session and branch.
+- **Private by default.** Listens only on your Tailscale IP and checks both a bearer token and the caller's Tailscale device identity on every request. Nothing is exposed to the public internet.
+- **Zero dependencies.** One standard-library Python file (`bridge.py`).
+
+> **Note on naming:** Tether was originally built as `claude-bridge`. To avoid breaking existing installs and launchd services, the default config path (`~/.config/claude-bridge/config.json`), launchd label (`ai.claude-bridge`), and current headless job tool names (`delegate_to_claude`, `resume_claude`, `message_claude`) keep their original names while broader multi-agent and live terminal session support rolls out.
 
 ## Requirements
 
-- A Mac that stays on, with Python 3.9+, git and [Claude Code](https://claude.com/claude-code)
+- An always-on Mac with Python 3.9+, `git`, and [Claude Code](https://claude.com/claude-code) for delegated jobs
 - [Tailscale](https://tailscale.com) on that Mac
-- [Grok Bot](https://grok.com) with its Tailscale plugin connected
+- A cloud bot platform with MCP + Tailscale support (e.g. [Grok Bot](https://grok.com) with its Tailscale plugin connected)
 
 ## Quick start
 
-> **Easiest:** give [docs/SETUP.md](docs/SETUP.md) to your coding agent. It does the Mac side and tells you the
-> few clicks to make in Grok Bot.
+> **Easiest:** hand [docs/SETUP.md](docs/SETUP.md) to your coding agent. It configures the Mac side and walks you through the few clicks in Grok Bot and Tailscale.
 
 ```bash
-git clone https://github.com/maloqab/claude-bridge ~/claude-bridge
-cd ~/claude-bridge && sh deploy/install.sh        # installs the service and creates the config
-claude setup-token                                # a token for Claude Code to run headless
+git clone https://github.com/maloqab/tether ~/claude-bridge
+cd ~/claude-bridge && sh deploy/install.sh        # installs the launchd service and starter config
+claude setup-token                                # token for headless delegated runs
 ```
 
-1. Fill in `~/.config/claude-bridge/config.json`. You need your Tailscale IP, a bearer token, your Claude token
-   and the repos to allow; see [Configuration](#configuration).
-2. In Grok Bot: **Connect apps → Add a custom connector → Remote HTTPS**. Use the URL
-   `http://<your-mac>.<tailnet>.ts.net:8766/mcp` and the header `Authorization: Bearer <token>`.
-3. Ask your bot to **create a webhook routine** for claude-bridge, and put its URL and key under `notify` in the
-   config. That gives you the way back.
+1. Fill in `~/.config/claude-bridge/config.json` with your Tailscale IP, bearer token, Claude setup token, and allowlisted repos (see [Configuration](#configuration)).
+2. In Grok Bot: **Connect apps → Add a custom connector → Remote HTTPS**, using `http://<your-mac>.<tailnet>.ts.net:8766/mcp` and header `Authorization: Bearer <token>`.
+3. Ask your main bot to **create a webhook routine** for Tether, and save its URL and key under `notify` in your config to enable replies back to your Macs.
 
 ## Usage
 
-**In Grok Bot**, just ask:
+**From a cloud bot (Grok Bot):**
 
-> Use claude-bridge to have Claude find why the login test is flaky in `my-app`. Read-only, and tell me what it finds.
+> Use tether to find why the login test is flaky in `my-app`. Read-only, and tell me what it finds.
 
-> Have Claude add input validation to the signup form in `my-app` (work mode) and wake me when it's done.
+> Have tether add input validation to the signup form in `my-app` (work mode) and wake me when it's done.
 
-**From Claude Code** (or any terminal on your Macs):
+**From any local coding agent or terminal on your Macs:**
 
 ```bash
 bot assistant "The deploy finished. Can you post the release notes?"
 bot researcher "What's the status of the data import?" --wait 600   # waits for the reply
 ```
 
-## Tools
+## MCP Tools
 
 | Tool | What it does |
 |---|---|
-| `delegate_to_claude(repo, task, mode, notify?)` | Starts a Claude Code job. `mode` is `review` (read-only) or `work` (edits on a new branch). Returns a `job_id`. |
-| `check_job(job_id)` | Gets the status, Claude's answer, the branch and the diff stat. |
-| `resume_claude(job_id, message)` | Continues a finished job with a follow-up. |
+| `delegate_to_claude(repo, task, mode, notify?)` | Starts a headless job in an allowlisted repo. `mode` is `review` (read-only) or `work` (edits on a new branch). Returns a `job_id`. |
+| `check_job(job_id)` | Returns job status, answer, branch, and diff stat. |
+| `resume_claude(job_id, message)` | Continues a finished job with a follow-up in the same session and branch. |
 | `list_jobs()` | Lists recent jobs. |
-| `message_claude(message, reply_to?, from_bot?)` | Sends Claude Code a message, e.g. an answer to `bot`. |
+| `message_claude(message, reply_to?, from_bot?)` | Delivers a reply or message back to local agents (e.g. answering a `bot` call). |
 
 ## Configuration
 
@@ -76,20 +71,24 @@ bot researcher "What's the status of the data import?" --wait 600   # waits for 
 
 | Key | Meaning |
 |---|---|
-| `owner` | Your name, used in Claude's instructions |
-| `host`, `port` | The Tailscale IP and port to listen on |
-| `token_ref` | The bearer token Grok sends |
-| `claude_token_ref` | Your `claude setup-token` token |
-| `allowed_callers` | Tailscale device names allowed to call (Grok's is `grokbot-user-…`) |
-| `repos` | Repos bots may use: `url`, `branch_prefix`, `commit_trailer`, and `open_pr` to push work branches |
-| `notify`, `relay_via` | Bots' webhook URL and key, and which bot relays to the others |
+| `owner` | Your name, used in delegated job instructions |
+| `host`, `port` | Tailscale IP and port to listen on |
+| `token_ref` | Bearer token the cloud bot sends |
+| `claude_token_ref` | Token from `claude setup-token` for headless runs |
+| `allowed_callers` | Allowed Tailscale device names (e.g. `grokbot-user-…`) |
+| `repos` | Allowlisted repos: `url`, `branch_prefix`, `commit_trailer`, and `open_pr` for work branches |
+| `notify`, `relay_via` | Bot webhook URLs/keys and which bot relays messages to the others |
 
-Secrets can be `op://vault/item/field` (1Password CLI), `env:NAME` or `file:/path`.
+Secrets can be referenced via `op://vault/item/field` (1Password CLI), `env:NAME`, or `file:/path`.
 
 ## Contributing
 
-Issues and PRs are welcome. Run the tests with `python3 -m unittest discover -s tests`.
+Issues and PRs are welcome. Run the test suite with:
+
+```bash
+python3 -m unittest discover -s tests
+```
 
 ## License
 
-[MIT](LICENSE). This is a community project, not affiliated with Anthropic or xAI.
+[MIT](LICENSE). Community project, not affiliated with Anthropic or xAI.

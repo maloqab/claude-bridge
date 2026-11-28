@@ -1,12 +1,12 @@
-# Connect Claude Code and your Grok Bots
+# Set up Tether (formerly `claude-bridge`)
 
-Give this file to your coding agent (Claude Code, Codex, …) together with a copy of this repo. The agent does
+Give this file to your coding agent (Claude Code, Codex, Antigravity, …) together with a copy of this repo. The agent does
 the Mac side; you do a few clicks in Grok Bot and Tailscale. Expect about 30 minutes.
 
 **What you get**
-- Your Grok Bots can hand repository work to Claude Code on your Mac: read-only questions, or edits on a branch
-  with a draft PR. They call it as a tool and get the result back.
-- Claude Code can message any of your bots and get answers, from any session on any of your Macs.
+- Your cloud bots (Grok Bots) can hand repository work to local coding agents on your Mac: read-only questions, or edits on a branch
+  with a draft PR. They call it as an MCP tool and get the result back.
+- Any local coding agent or terminal session on your Macs can message any of your bots and get answers back via `bot`.
 
 **How it works.** A small server, `bridge.py`, runs on an always-on Mac and listens only on your Tailscale network.
 Grok Bot reaches it through Grok's Tailscale plugin, as an MCP connector, and starts Claude Code jobs. When a job
@@ -33,7 +33,7 @@ Tell your agent which Mac is the bridge Mac and where you saved the setup token.
 > **Agent:** do these steps in order on the bridge Mac. Never print secret values; show only their length.
 > Ask the human whenever a step says **[HUMAN]**.
 
-1. **Get the code.** Clone this repo to `~/claude-bridge` on the bridge Mac, then run
+1. **Get the code.** Clone `https://github.com/maloqab/tether` to `~/claude-bridge` on the bridge Mac, then run
    `cd ~/claude-bridge && python3 -m unittest discover -s tests`. All tests must pass.
 
 2. **Make the bearer token** that Grok will send. In 1Password:
